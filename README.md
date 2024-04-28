@@ -3,7 +3,7 @@
 Install Docker EE using Mirantis Launchpad
 
 Pre-Requistic
-1. Atleast 2 Ec2 machine of Ubuntu 20.04 LTS image, one for Manager and 2 worker
+1. Atleast 2 Ec2 machine, t2.large of Ubuntu 20.04 LTS image, one for Manager and 2 worker. AWS AMI Image - ami-09cc6a8fafaecf851
 2. One worker will used for Docker registry
 
 Generate Keys
@@ -13,9 +13,19 @@ ssh-keygen
 Authorized_keys for master and worker node
 ```
 touch .ssh/authorized_keys
+```
+```
 chmod -R 700 .ssh
+```
+```
+cat .ssh/id_rsa.pub
+```
+
+###  Add the content of public key into authorized_keys
+```
 vi .ssh/authorized_keys
 ```
+Follow same for all the worker nodes.
 
 Check the connection to worker node
 ```
@@ -43,10 +53,9 @@ View the Launchpad version number:
 Register the cluster:
 ``` 
 ./launchpad register
-
-# When prompted, enter in your name, email, and company name.
-Type "Y" to accept the license agreement.
 ```
+When prompted, enter in your name, email, and company name. Type "Y" to accept the license agreement.
+
 ## Generate Certificates for DTR
 
 Generate a certificate using open SSL:
@@ -88,8 +97,9 @@ Generate the public certificate for the server, passing in the certificate signi
 ```
 openssl x509 -req -in dtr.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out dtr.crt -days 365 -sha256 -extfile extfile.cnf
 ```
-    
-Create the Cluster
+<br>
+
+## Create the Cluster
 Create a cluster configuration file:
 ```
 vi cluster.yaml
@@ -144,7 +154,9 @@ Check the privateInterface to apply using ifconfig command. It can be eth0 or en
 Save and exit this file:
     :wq
 
-Then look at the certificate file:
+Below steps we will need to perform if we are installing DTR as well.
+****
+
 ```
 cat dtr.crt
 ```
@@ -163,7 +175,10 @@ vi cluster.yaml
 Save and exit the cluster.yaml file:
     :wq
 
-Then create the cluster itself using Launchpad:
+*****
+<br><br><br>
+
+Now we are ready to launch our configuration
 ```
 ./launchpad apply -c ./cluster.yaml
 
@@ -182,3 +197,241 @@ On the Docker Trusted Registry login page, use the same credentials that you use
 Select Skip For Now for the license.
 
 Check the Docker Trusted Registry interface and see if your Docker EE cluster setup was successful.
+
+
+
+# Setting up Kubectl
+
+kubectl is a command line tool to access kubernetes cluster.
+
+Install kubectl on machine
+```
+curl -LO "https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl"
+```
+
+```
+sudo mv ./kubectl /usr/local/bin/kubectl
+```
+```
+sudo chmod 777 /usr/local/bin/kubectl
+```
+```
+sudo kubectl version --client
+```
+
+Download the client bundle from UCP. Navigate to Admin-->My Profile --> Client Bundle --> Download
+
+Extract the zip file, you will find kube.yaml. 
+```
+mkdir ~/.kube
+```
+```
+cd .kube
+```
+Copy the kube.yaml content to .kube/config file 
+```
+vi config
+```
+```
+kubectl --insecure-skip-tls-verify get pods
+```
+
+```
+kubectl exec --insecure-skip-tls-verify nginx-pod -- cat /etc/hostname
+```
+```
+kubectl delete pod --insecure-skip-tls-verify nginx-pod
+```
+
+
+# Create a nginx service on Kubernetes and access it using a pod
+
+Create a service on kubernetes
+Navigate to Kubernetes--> Create
+
+Add below Yaml to create a deployment
+```
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+```
+
+Create a service 
+```
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+spec:
+  selector:
+    app: nginx
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+```
+Check the IP address of Pod created as part of deployment. Navigate to Kubernetes--> Pod --> click on Pod
+
+Create a endpoint
+```
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: nginx-service-endpoint
+subsets:
+  - addresses:
+      - ip: <pod_ip_1>
+      - ip: <pod_ip_2>
+    ports:
+      - port: 80
+```
+Replace <pod_ip_1>, <pod_ip_2> with the IP addresses of your Nginx pods.
+
+Create a pod to access the nginx service
+
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-client-pod
+spec:
+  containers:
+  - name: nginx-client
+    image: curlimages/curl:latest
+    command: ["sleep", "infinity"]
+```
+
+Access nginx using service Ip address. Navigate to Kubenetes-->Pod--> click on pod nginx-client-pod.
+
+Click on exec icon on top right and open a sh terminal
+```
+curl nginx-service
+
+or 
+
+curl <ipaddress of nginx service>
+```
+
+
+# Storage
+
+
+Create a /mnt/data directory and navigate to it
+```
+sudo mkdir /mnt/data
+```
+```
+cd /mnt/data
+```
+
+Create a Persistent Volume
+```
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: task-pv-volume
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 3Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/data"
+```
+
+Create Persistent Volume Claim
+```
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: task-pv-claim
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+```
+
+Check the status of Persistent Volume, it will be 'Bound'. As soon as you delete PVC, it will change to 'Release'.
+
+
+# ConfigMap and Secrets
+
+Create a configmap
+```
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: example-configmap
+data:
+  key1: value1
+  key2: value2
+```
+
+Create Secret
+
+```
+apiVersion: v1
+kind: Secret
+metadata:
+  name: example-secret
+type: Opaque
+data:
+  username: dXNlcm5hbWU=  # base64-encoded "username"
+  password: cGFzc3dvcmQ=  # base64-encoded "password"
+```
+
+Create a POD, which uses confgmap and secret as Env variable
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example-pod
+spec:
+  containers:
+  - name: example-container
+    image: nginx
+    env:
+      - name: CONFIG_KEY1
+        valueFrom:
+          configMapKeyRef:
+            name: example-configmap
+            key: key1
+      - name: SECRET_USERNAME
+        valueFrom:
+          secretKeyRef:
+            name: example-secret
+            key: username
+```
+
+Navigate to the Pod and execute command
+```
+env
+```
+It will list down all the environment variables and we can find variable as CONFIG_KEY1 and SECRET_USERNAME.
+
+
+
